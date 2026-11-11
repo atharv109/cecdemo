@@ -47,6 +47,8 @@ def main() -> int:
     FACULTY_KEEP = {
         "id", "name", "title", "departmentId", "email", "keywords", "expertise",
         "interests", "summary", "labName", "profileUrl", "availability",
+        # matcher reads these for confidence/unknowns (baseline.ts) — keep parity
+        "sources", "coverageNotes", "lastVerified", "emailVerified",
     }
     fac_slim = {
         fid: {k: v for k, v in rec.items() if k in FACULTY_KEEP}

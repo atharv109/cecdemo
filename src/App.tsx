@@ -27,6 +27,9 @@ import {
   RowExpansion,
   draftStatuses,
 } from "@/components/demo/intro";
+import { runBaseline } from "@/lib/engine/matching/baseline";
+import type { MatchCorpus } from "@/lib/engine/matching/types";
+import type { MatchRequest } from "@/lib/engine/types";
 import { AreaSparkline } from "@/components/charts/sparkline";
 import {
   Panel,
@@ -115,7 +118,7 @@ function fmtBucket(date: string): "now" | "past" {
 
 type MatchResult = NobleMatchResult;
 
-function useMatch(need: NobleInterest | null, baked?: NobleMatchResult) {
+function useMatch(need: NobleInterest | null, baked?: NobleMatchResult, corpus?: MatchCorpus) {
   const [result, setResult] = useState<MatchResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -124,28 +127,30 @@ function useMatch(need: NobleInterest | null, baked?: NobleMatchResult) {
     setBusy(true);
     setErr(null);
     setResult(null);
+    const req: MatchRequest = {
+      text: `${need.title}. ${need.description ?? ""}`,
+      engagementType: "research",
+      topics: [],
+      disciplines: [],
+      constraints: {},
+    };
     fetch("/api/w/live/match", {
       method: "POST",
       headers: { "content-type": "application/json", "x-dev-user": "athar@nittany.ai" },
-      body: JSON.stringify({
-        request: {
-          text: `${need.title}. ${need.description ?? ""}`,
-          engagementType: "research",
-          topics: [],
-          disciplines: [],
-          constraints: {},
-        },
-      }),
+      body: JSON.stringify({ request: req }),
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setResult(d))
       .catch(() => {
-        // live engine unreachable (static deploy) — serve the precomputed match
+        // static deploy (or engine hiccup): baked match first, then the
+        // client-side copy of the same baseline matcher
         if (baked && (baked.results?.length ?? 0) > 0) {
           setResult(baked);
+        } else if (corpus && corpus.faculty.length > 0) {
+          setResult(runBaseline(req, corpus));
         } else {
           setErr(
-            "Live matching needs the noble engine (npm run dev in frontend/) — no precomputed match is bundled for this need.",
+            "Live matching needs the noble engine (npm run dev in frontend/) — no match is bundled for this need.",
           );
         }
       })
@@ -216,6 +221,18 @@ export default function App() {
     return m;
   }, [signals]);
   const facultyCount = Object.keys(state?.db.faculty ?? {}).length;
+  /* client-side copy of the engine matcher — ready from the snapshot too, so
+     Match Studio still ranks custom searches in the read-only deploy */
+  const corpus = useMemo<MatchCorpus>(
+    () => ({
+      faculty: Object.values(state?.db.faculty ?? {}) as unknown as MatchCorpus["faculty"],
+      departments: (state?.db.departments ?? {}) as MatchCorpus["departments"],
+      projects: [],
+      publications: [],
+      ip: [],
+    }),
+    [state],
+  );
   const toTriage = useMemo(() => signals.filter((s) => !triage[s.id]).length, [signals, triage]);
   const userId = useMemo(() => (state ? firstUserId(state) : ""), [state]);
   const refresh = useCallback(async () => {
@@ -418,6 +435,7 @@ export default function App() {
             draftsMap={state.db.drafts}
             refresh={refresh}
             live={live}
+            corpus={corpus}
           />
         )}
 
@@ -435,6 +453,7 @@ export default function App() {
                 refresh={refresh}
                 live={live}
                 baked={bakedMatches[need.id]}
+                corpus={corpus}
                 onBack={() => setRoute({ view: "company", companyId: need.companyId })}
                 onStudio={() =>
                   setRoute({
@@ -1209,6 +1228,7 @@ function MatchView({
   refresh,
   live,
   baked,
+  corpus,
   onBack,
   onStudio,
 }: {
@@ -1221,10 +1241,11 @@ function MatchView({
   refresh: () => void;
   live: boolean;
   baked?: NobleMatchResult;
+  corpus: MatchCorpus;
   onBack: () => void;
   onStudio: () => void;
 }) {
-  const { result, busy, err } = useMatch(need, baked);
+  const { result, busy, err } = useMatch(need, baked, corpus);
   return (
     <div className="mx-auto max-w-3xl px-6 py-5">
       <button
@@ -1661,7 +1682,7 @@ function MatchResultsList({
 
 /* ------------------------------ match studio ----------------------------- */
 
-function useMatchText() {
+function useMatchText(corpus: MatchCorpus) {
   const [result, setResult] = useState<MatchResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -1670,25 +1691,27 @@ function useMatchText() {
     setBusy(true);
     setErr(null);
     setResult(null);
+    const req: MatchRequest = {
+      text,
+      engagementType: "research",
+      topics: [],
+      disciplines: [],
+      constraints: {},
+    };
     fetch("/api/w/live/match", {
       method: "POST",
       headers: { "content-type": "application/json", "x-dev-user": "athar@nittany.ai" },
-      body: JSON.stringify({
-        request: {
-          text,
-          engagementType: "research",
-          topics: [],
-          disciplines: [],
-          constraints: {},
-        },
-      }),
+      body: JSON.stringify({ request: req }),
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setResult(d))
       .catch(() => {
-        setErr(
-          "Match Studio needs the live noble engine (npm run dev in frontend/) — custom searches aren't available in the read-only snapshot deploy.",
-        );
+        // static deploy: the vendored baseline matcher runs in the browser
+        if (corpus.faculty.length > 0) {
+          setResult(runBaseline(req, corpus));
+        } else {
+          setErr("Match Studio needs faculty data — none is loaded yet.");
+        }
       })
       .finally(() => setBusy(false));
   };
@@ -1704,6 +1727,7 @@ function StudioView({
   draftsMap,
   refresh,
   live,
+  corpus,
 }: {
   initialText: string | null;
   companies: NobleCompany[];
@@ -1713,9 +1737,10 @@ function StudioView({
   draftsMap: Record<string, NobleDraft> | undefined;
   refresh: () => void;
   live: boolean;
+  corpus: MatchCorpus;
 }) {
   const [text, setText] = useState(initialText ?? "");
-  const { result, busy, err, run } = useMatchText();
+  const { result, busy, err, run } = useMatchText(corpus);
 
   useEffect(() => {
     if (initialText) run(initialText);
