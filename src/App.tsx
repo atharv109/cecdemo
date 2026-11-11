@@ -16,6 +16,7 @@ import {
   prepareIntros,
   recordIntrosSent,
   saveDraftEdits,
+  draftCopy,
   firstUserId,
   type IntroCtx,
   type MatchExplanation,
@@ -117,6 +118,27 @@ function fmtBucket(date: string): "now" | "past" {
 /* ---------------------- match studio (noble engine) --------------------- */
 
 type MatchResult = NobleMatchResult;
+
+/* In the read-only snapshot deploy the noble engine isn't reachable, so draft
+   texts live in this browser's localStorage — always labeled as demo only. */
+type LocalDraft = { draftId: string; subject: string; body: string; st: "drafted" | "sent" };
+const LOCAL_DRAFTS_KEY = "demo-intro-local-drafts-v1";
+
+function readLocalDraftStore(): Record<string, LocalDraft> {
+  try {
+    return JSON.parse(localStorage.getItem(LOCAL_DRAFTS_KEY) ?? "{}") as Record<string, LocalDraft>;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalDraftStore(m: Record<string, LocalDraft>): void {
+  try {
+    localStorage.setItem(LOCAL_DRAFTS_KEY, JSON.stringify(m));
+  } catch {
+    /* storage unavailable — drafts stay session-only */
+  }
+}
 
 function useMatch(need: NobleInterest | null, baked?: NobleMatchResult, corpus?: MatchCorpus) {
   const [result, setResult] = useState<MatchResult | null>(null);
@@ -1369,11 +1391,13 @@ function MatchResultsList({
   const [busy, setBusy] = useState<boolean | null>(null);
   const [autoPrepping, setAutoPrepping] = useState<string[]>([]);
   const [introErr, setIntroErr] = useState<string | null>(null);
-  const [localDrafts, setLocalDrafts] = useState<
-    Record<string, { draftId: string; subject: string; body: string; st: "drafted" | "sent" }>
-  >({});
+  const [localDrafts, setLocalDrafts] = useState<Record<string, LocalDraft>>(() =>
+    intro?.interactive === false ? readLocalDraftStore() : {},
+  );
   /* fresh reads inside async chains (doPrepare → doSend in one press) */
   const localDraftsRef = useRef(localDrafts);
+  /* snapshot deploy: the engine isn't reachable, drafts live in this browser */
+  const localMode = intro?.interactive === false;
 
   const stateStatuses = useMemo(() => draftStatuses(intro?.draftsMap), [intro?.draftsMap]);
   const statusFor = (facultyId: string): "drafted" | "sent" | undefined =>
@@ -1423,10 +1447,6 @@ function MatchResultsList({
 
   async function doPrepare(ids: string[]) {
     if (!intro) return;
-    if (intro.interactive === false) {
-      setIntroErr("Read-only snapshot deploy — drafting and demo-send work in the local app.");
-      return;
-    }
     // don't duplicate drafts for faculty that already have one
     const fresh = ids.filter((id) => statusFor(id) === undefined);
     if (fresh.length === 0) return;
@@ -1434,26 +1454,43 @@ function MatchResultsList({
     setIntroErr(null);
     try {
       const whyByFaculty = Object.fromEntries(fresh.map((id) => [id, whyLineFor(result, id).line]));
-      const prepared = await prepareIntros({
-        ctx: intro.ctx,
-        faculty: fresh.map((id) => ({ facultyId: id, facultyName: facultyRow?.[id]?.name ?? id })),
-        userId: intro.userId,
-        whyByFaculty,
-      });
-      {
-        const next = {
-          ...localDraftsRef.current,
-          ...Object.fromEntries(
-            prepared.map((p) => [
-              p.draft.facultyId,
-              { draftId: p.draft.id, subject: p.draft.subject, body: p.draft.body, st: "drafted" as const },
-            ]),
-          ),
-        };
+      if (localMode) {
+        /* static deploy: same draft template, kept in this browser only */
+        const stamp = Date.now().toString(36);
+        const next = { ...localDraftsRef.current };
+        for (const id of fresh) {
+          const copy = draftCopy(
+            { ...intro.ctx, whyLine: whyByFaculty[id] ?? intro.ctx.whyLine },
+            facultyRow?.[id]?.name ?? id,
+            "Athar",
+          );
+          next[id] = { draftId: `local-${stamp}-${id}`, subject: copy.subject, body: copy.body, st: "drafted" };
+        }
         localDraftsRef.current = next;
         setLocalDrafts(next);
+        writeLocalDraftStore(next);
+      } else {
+        const prepared = await prepareIntros({
+          ctx: intro.ctx,
+          faculty: fresh.map((id) => ({ facultyId: id, facultyName: facultyRow?.[id]?.name ?? id })),
+          userId: intro.userId,
+          whyByFaculty,
+        });
+        {
+          const next = {
+            ...localDraftsRef.current,
+            ...Object.fromEntries(
+              prepared.map((p) => [
+                p.draft.facultyId,
+                { draftId: p.draft.id, subject: p.draft.subject, body: p.draft.body, st: "drafted" as const },
+              ]),
+            ),
+          };
+          localDraftsRef.current = next;
+          setLocalDrafts(next);
+        }
+        intro.refresh();
       }
-      intro.refresh();
     } catch (e) {
       setIntroErr(String(e));
     } finally {
@@ -1473,13 +1510,27 @@ function MatchResultsList({
 
   async function doSend(ids: string[]) {
     if (!intro) return;
-    if (intro.interactive === false) {
-      setIntroErr("Read-only snapshot deploy — drafting and demo-send work in the local app.");
-      return;
-    }
     setBusy(true);
     setIntroErr(null);
     try {
+      if (localMode) {
+        /* static deploy: the send is recorded in this browser only */
+        const next = { ...localDraftsRef.current };
+        let marked = 0;
+        for (const id of ids) {
+          if (next[id] && next[id].st !== "sent") {
+            next[id] = { ...next[id], st: "sent" };
+            marked++;
+          }
+        }
+        if (marked > 0) {
+          localDraftsRef.current = next;
+          setLocalDrafts(next);
+          writeLocalDraftStore(next);
+        }
+        setSelected(new Set());
+        return;
+      }
       const stateIds: string[] = [];
       for (const id of ids) {
         if (statusFor(id) === "sent") continue;
@@ -1604,7 +1655,7 @@ function MatchResultsList({
                 <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium tabular-nums">
                   {c.score}
                 </span>
-                {st && <IntroStatusChip status={st} />}
+                {st && <IntroStatusChip status={st} local={localMode} />}
                 {intro && (
                   <button
                     type="button"
@@ -1657,9 +1708,16 @@ function MatchResultsList({
           }}
           status={statusFor(drawerId)}
           autoPrep={autoPrepping.includes(drawerId)}
+          localMode={localMode}
           onSaveSubjectBody={(id, subject, body) => {
-            if (intro.interactive === false) {
-              setIntroErr("Read-only snapshot deploy — draft editing works in the local app.");
+            if (localMode) {
+              /* static deploy: edits persist in this browser only */
+              const next = { ...localDraftsRef.current };
+              if (!next[id]) return;
+              next[id] = { ...next[id], subject, body };
+              localDraftsRef.current = next;
+              setLocalDrafts(next);
+              writeLocalDraftStore(next);
               return;
             }
             const local = localDraftsRef.current[id];

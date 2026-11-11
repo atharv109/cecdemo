@@ -113,6 +113,7 @@ export function FacultyEmailDrawer({
   draft,
   status,
   autoPrep,
+  localMode,
   onSaveSubjectBody,
   onSend,
   onClose,
@@ -124,6 +125,8 @@ export function FacultyEmailDrawer({
   status?: "drafted" | "sent";
   /** auto-draft is being created server-side right now */
   autoPrep: boolean;
+  /** static deploy: the draft/send live in this browser only */
+  localMode?: boolean;
   onSaveSubjectBody: (facultyId: string, subject: string, body: string) => void;
   onSend: (facultyId: string) => void;
   onClose: () => void;
@@ -181,7 +184,14 @@ export function FacultyEmailDrawer({
 
         <div className="space-y-3 px-5 py-4">
           {status === "sent" && (
-            <StatusChip label="Recorded sent — nothing was actually emailed (demo)" tone="green" />
+            <StatusChip
+              label={
+                localMode
+                  ? "Sent — saved in this browser only · nothing was emailed (demo)"
+                  : "Recorded sent — nothing was actually emailed (demo)"
+              }
+              tone="green"
+            />
           )}
           {autoPrep && !draft && (
             <p className="text-xs text-muted-foreground" role="status">
@@ -282,11 +292,11 @@ export function BulkIntroBar({
   );
 }
 
-export function IntroStatusChip({ status }: { status: "drafted" | "sent" }) {
+export function IntroStatusChip({ status, local }: { status: "drafted" | "sent"; local?: boolean }) {
   return status === "sent" ? (
-    <StatusChip label="sent (demo)" tone="green" />
+    <StatusChip label={local ? "sent · browser only (demo)" : "sent (demo)"} tone="green" />
   ) : (
-    <StatusChip label="draft ready" tone="blue" />
+    <StatusChip label={local ? "draft · browser only" : "draft ready"} tone="blue" />
   );
 }
 
