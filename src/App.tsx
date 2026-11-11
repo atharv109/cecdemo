@@ -1127,10 +1127,14 @@ function NobleCompanyView({
   const now = signals.filter((r) => fmtBucket(r.date) === "now");
   const past = signals.filter((r) => fmtBucket(r.date) !== "now");
   const triaged = triage ? signals.filter((r) => triage[r.id]).length : null;
-  /* matchengine dossier score lives in the description prose ("score 6.7") */
+  /* matchengine dossier score lives in the description prose ("score 6.7") —
+     keep the sentence in the data (the ring reads it) but don't show the prose */
   const dossierScore = parseFloat(
     /score ([\d.]+)/.exec(company.description ?? "")?.[1] ?? "NaN",
   );
+  const dossierFreeDesc = (company.description ?? "")
+    .replace(/^matchengine dossier[^.]*\.\s*/i, "")
+    .trim();
 
   return (
     <div>
@@ -1148,7 +1152,9 @@ function NobleCompanyView({
             <Avatar name={company.name} className="h-12 w-12 rounded-xl text-lg" />
             <div>
               <h1 className="text-xl font-semibold tracking-tight">{company.name}</h1>
-              <p className="mt-0.5 max-w-2xl text-xs text-muted-foreground">{company.description}</p>
+              <p className="mt-0.5 max-w-2xl text-xs text-muted-foreground">
+                {dossierFreeDesc || "Match-engine dossier · catalysts are timing-only signals."}
+              </p>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {Number.isFinite(dossierScore) && (
                   <span className="shrink-0 text-foreground" title="matchengine dossier score (0–10)">
