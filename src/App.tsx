@@ -1133,7 +1133,8 @@ function NobleCompanyView({
     /score ([\d.]+)/.exec(company.description ?? "")?.[1] ?? "NaN",
   );
   const dossierFreeDesc = (company.description ?? "")
-    .replace(/^matchengine dossier[^.]*\.\s*/i, "")
+    /* sentence end = a period followed by whitespace or EOL, so "6.7" survives */
+    .replace(/^matchengine dossier.*?\.(?=\s|$)\s*/i, "")
     .trim();
 
   return (
