@@ -104,19 +104,19 @@ export function PipelineRings({
   );
 }
 
-/** Small ring around a match score (0..100), colored by band. */
-export function ScoreRing({ score, band }: { score: number | null; band?: string }) {
-  if (score == null) {
+/** Small ring around a score, colored by band (defaults to a 0–100 match score). */
+export function ScoreRing({ score, band, max = 100 }: { score: number | null; band?: string; max?: number }) {
+  if (score == null || !Number.isFinite(score)) {
     return <span className="text-[11px] text-muted-foreground">—</span>;
   }
   const color = band === "strong" ? RING.green : band === "good" ? RING.blue : RING.gold;
-  const pct = Math.max(0, Math.min(1, score / 100));
+  const pct = Math.max(0, Math.min(1, score / max));
   const size = 36;
   const stroke = 4;
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`Match score ${score} of 100`}>
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={`Score ${score} of ${max}`}>
       <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={TRACK} strokeWidth={stroke} />
       <circle
         cx={size / 2}
@@ -140,7 +140,7 @@ export function ScoreRing({ score, band }: { score: number | null; band?: string
         fill="currentColor"
         className="tabular-nums"
       >
-        {Math.round(score)}
+        {max === 100 ? Math.round(score) : score.toFixed(1)}
       </text>
     </svg>
   );

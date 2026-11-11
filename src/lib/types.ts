@@ -198,6 +198,8 @@ export interface NobleOpportunity {
   id: string;
   title: string;
   companyId: string;
+  /** the need this opportunity came from — routes to its professor match */
+  interestId?: string;
   stage: string;
   createdAt: string;
 }

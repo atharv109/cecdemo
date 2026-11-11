@@ -541,7 +541,11 @@ export default function App() {
         {route.view === "opportunities" && (
           <OpportunitiesView
             state={state}
-            onOpen={(id) => setRoute({ view: "company", companyId: id })}
+            onOpen={(companyId, needId) =>
+              needId && state.db.interests[needId]
+                ? setRoute({ view: "match", needId })
+                : setRoute({ view: "company", companyId })
+            }
           />
         )}
 
@@ -551,6 +555,8 @@ export default function App() {
             signals={signalsByCompany.get(route.companyId) ?? []}
             needs={needsByCompany.get(route.companyId) ?? []}
             facultyCount={facultyCount}
+            triage={triage}
+            introByNeed={progress.introByNeed}
             onHome={() => setRoute({ view: "companies" })}
             onMatch={(needId) => setRoute({ view: "match", needId })}
           />
@@ -1101,6 +1107,8 @@ function NobleCompanyView({
   signals,
   needs,
   facultyCount,
+  triage,
+  introByNeed,
   onHome,
   onMatch,
 }: {
@@ -1108,12 +1116,21 @@ function NobleCompanyView({
   signals: SignalRow[];
   needs: NobleInterest[];
   facultyCount: number;
+  /** triage state — drives this company's progress bar in the header */
+  triage?: TriageState;
+  /** need id → draft/sent counts, for chips on the need cards */
+  introByNeed?: Map<string, { drafts: number; sent: number }>;
   onHome: () => void;
   onMatch: (needId: string) => void;
 }) {
   const [tab, setTab] = useState("overview");
   const now = signals.filter((r) => fmtBucket(r.date) === "now");
   const past = signals.filter((r) => fmtBucket(r.date) !== "now");
+  const triaged = triage ? signals.filter((r) => triage[r.id]).length : null;
+  /* matchengine dossier score lives in the description prose ("score 6.7") */
+  const dossierScore = parseFloat(
+    /score ([\d.]+)/.exec(company.description ?? "")?.[1] ?? "NaN",
+  );
 
   return (
     <div>
@@ -1133,6 +1150,11 @@ function NobleCompanyView({
               <h1 className="text-xl font-semibold tracking-tight">{company.name}</h1>
               <p className="mt-0.5 max-w-2xl text-xs text-muted-foreground">{company.description}</p>
               <div className="mt-2 flex flex-wrap items-center gap-2">
+                {Number.isFinite(dossierScore) && (
+                  <span className="shrink-0 text-foreground" title="matchengine dossier score (0–10)">
+                    <ScoreRing score={dossierScore} max={10} />
+                  </span>
+                )}
                 <StatusChip label={`${company.relationship} relationship`} tone="blue" />
                 <StatusChip
                   label={`${needs.length} needs on record`}
@@ -1140,6 +1162,15 @@ function NobleCompanyView({
                   dotted={false}
                 />
                 <StatusChip label={`${signals.length} signals`} tone="neutral" dotted={false} />
+                {triaged !== null && (
+                  <MiniBar
+                    done={triaged}
+                    total={signals.length}
+                    color="#3257a3"
+                    width={96}
+                    label={`Triage progress for ${company.name}`}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -1325,7 +1356,16 @@ function NobleCompanyView({
                     </span>
                   ))}
                 </div>
-                <div className="mt-3 border-t border-border/50 pt-3">
+                <div className="mt-3 flex items-center gap-2 border-t border-border/50 pt-3">
+                  {(() => {
+                    const intro = introByNeed?.get(n.id);
+                    return intro && intro.drafts > 0 ? (
+                      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+                        {intro.sent > 0 ? `${intro.sent} sent` : "drafted"}
+                        {intro.drafts > intro.sent ? ` · ${intro.drafts - intro.sent} drafted` : ""}
+                      </span>
+                    ) : null;
+                  })()}
                   <button type="button" className={btnPrimary} onClick={() => onMatch(n.id)}>
                     Find faculty
                   </button>
@@ -2004,7 +2044,7 @@ function OpportunitiesView({
   onOpen,
 }: {
   state: NobleState;
-  onOpen: (id: string) => void;
+  onOpen: (companyId: string, needId?: string) => void;
 }) {
   const opps = Object.values(state.db.opportunities ?? {}).sort((a, b) =>
     (b.createdAt ?? "").localeCompare(a.createdAt ?? ""),
@@ -2031,7 +2071,7 @@ function OpportunitiesView({
             <button
               key={o.id}
               type="button"
-              onClick={() => onOpen(o.companyId)}
+              onClick={() => onOpen(o.companyId, o.interestId)}
               className={cn(
                 "flex w-full items-center gap-3 rounded-xl border border-border bg-card px-4 py-3 text-left transition-colors hover:bg-muted/40",
                 "active:scale-[0.99]",
@@ -2039,6 +2079,11 @@ function OpportunitiesView({
             >
               <Avatar name={o.title} />
               <span className="flex-1 truncate text-sm font-medium">{o.title}</span>
+              {o.interestId && state.db.interests[o.interestId] && (
+                <span className="hidden text-[10px] text-muted-foreground sm:block">
+                  → professor match
+                </span>
+              )}
               <StatusChip label={o.stage} tone="blue" dotted={false} />
             </button>
           ))}
