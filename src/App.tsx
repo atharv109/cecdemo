@@ -44,6 +44,12 @@ import {
   btnPrimary,
   btnOutline,
 } from "@/components/demo/parts";
+import {
+  PipelineRings,
+  ScoreRing,
+  MiniBar,
+  type RingMetric,
+} from "@/components/demo/rings";
 
 /* -------------------------------- routing ------------------------------ */
 
@@ -121,7 +127,7 @@ type MatchResult = NobleMatchResult;
 
 /* In the read-only snapshot deploy the noble engine isn't reachable, so draft
    texts live in this browser's localStorage — always labeled as demo only. */
-type LocalDraft = { draftId: string; subject: string; body: string; st: "drafted" | "sent" };
+type LocalDraft = { draftId: string; subject: string; body: string; st: "drafted" | "sent"; needId?: string };
 const LOCAL_DRAFTS_KEY = "demo-intro-local-drafts-v1";
 
 function readLocalDraftStore(): Record<string, LocalDraft> {
@@ -243,6 +249,49 @@ export default function App() {
     return m;
   }, [signals]);
   const facultyCount = Object.keys(state?.db.faculty ?? {}).length;
+  /* workspace progress ("you did this · this is left") — engine drafts plus
+     the browser-local drafts from the snapshot deploy */
+  interface WorkspaceProgress {
+    signals: { done: number; total: number };
+    needs: { done: number; total: number };
+    intros: { sent: number; total: number };
+    introByNeed: Map<string, { drafts: number; sent: number }>;
+  }
+  const progress = useMemo<WorkspaceProgress>(() => {
+    const drafts = Object.values(state?.db.drafts ?? {});
+    const oppToInterest = new Map(
+      Object.values(state?.db.opportunities ?? {}).map((o) => [o.id, (o as { interestId?: string }).interestId ?? ""]),
+    );
+    const local = Object.values(readLocalDraftStore());
+    const introByNeed = new Map<string, { drafts: number; sent: number }>();
+    const bump = (nid: string, isSent: boolean) => {
+      const rec = introByNeed.get(nid) ?? { drafts: 0, sent: 0 };
+      rec.drafts++;
+      if (isSent) rec.sent++;
+      introByNeed.set(nid, rec);
+    };
+    let sent = 0;
+    for (const d of drafts) {
+      const isSent = d.status === "recorded-sent";
+      bump(oppToInterest.get(d.opportunityId) ?? "", isSent);
+      if (isSent) sent++;
+    }
+    for (const d of local) {
+      const isSent = d.st === "sent";
+      bump(d.needId ?? "", isSent);
+      if (isSent) sent++;
+    }
+    const matched = new Set(introByNeed.keys());
+    matched.delete("");
+    return {
+      signals: { done: signals.filter((s) => triage[s.id]).length, total: signals.length },
+      needs: { done: matched.size, total: needs.length },
+      intros: { sent, total: drafts.length + local.length },
+      introByNeed,
+    };
+    /* route in deps: the localStorage draft store isn't reactive — navigating
+       re-renders App and picks up fresh counts */
+  }, [state, triage, signals, needs, route]);
   /* client-side copy of the engine matcher — ready from the snapshot too, so
      Match Studio still ranks custom searches in the read-only deploy */
   const corpus = useMemo<MatchCorpus>(
@@ -517,6 +566,8 @@ export default function App() {
             facultyCount={facultyCount}
             toTriage={toTriage}
             last7={last7}
+            progress={progress}
+            triage={triage}
             onOpen={openCompany}
             onTriage={handleTriage}
             onMatch={(needId) => setRoute({ view: "match", needId })}
@@ -528,6 +579,7 @@ export default function App() {
             companies={companies}
             needsByCompany={needsByCompany}
             signalsByCompany={signalsByCompany}
+            triage={triage}
             onOpen={openCompany}
           />
         )}
@@ -562,11 +614,13 @@ function CompanyTable({
   companies,
   needsByCompany,
   signalsByCompany,
+  triage,
   onOpen,
 }: {
   companies: NobleCompany[];
   needsByCompany: Map<string, NobleInterest[]>;
   signalsByCompany: Map<string, SignalRow[]>;
+  triage?: TriageState;
   onOpen: (id: string) => void;
 }) {
   return (
@@ -578,6 +632,7 @@ function CompanyTable({
             <th className="px-3 py-2.5 font-medium">Relationship</th>
             <th className="px-3 py-2.5 font-medium">Needs</th>
             <th className="px-3 py-2.5 font-medium">Signals (30d)</th>
+            <th className="px-3 py-2.5 font-medium">Triage</th>
             <th className="px-3 py-2.5 font-medium">Activity (8w)</th>
             <th className="px-4 py-2.5 font-medium">Open opportunities</th>
           </tr>
@@ -608,6 +663,19 @@ function CompanyTable({
                   <StatusChip label={`${needs.length} ${needs.length === 1 ? "need" : "needs"}`} tone="neutral" dotted={false} />
                 </td>
                 <td className="px-3 py-2.5 tabular-nums">{signals30d(rows)}</td>
+                <td className="px-3 py-2.5">
+                  {triage && rows.length > 0 ? (
+                    <MiniBar
+                      done={rows.filter((r) => triage[r.id]).length}
+                      total={rows.length}
+                      color="#3257a3"
+                      width={72}
+                      label={`Triage progress for ${c.name}`}
+                    />
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">—</span>
+                  )}
+                </td>
                 <td className="px-3 py-2.5">
                   <AreaSparkline data={weeklyActivity(rows, 8)} dataKey="value" height={20} width={80} />
                 </td>
@@ -671,6 +739,8 @@ function HomeView({
   facultyCount,
   toTriage,
   last7,
+  progress,
+  triage,
   onOpen,
   onTriage,
   onMatch,
@@ -683,10 +753,22 @@ function HomeView({
   facultyCount: number;
   toTriage: number;
   last7: number;
+  progress: {
+    signals: { done: number; total: number };
+    needs: { done: number; total: number };
+    intros: { sent: number; total: number };
+    introByNeed: Map<string, { drafts: number; sent: number }>;
+  };
+  triage: TriageState;
   onOpen: (id: string) => void;
   onTriage: (id: string, status: "saved" | "dismissed" | "new") => void;
   onMatch: (needId: string) => void;
 }) {
+  const ringMetrics: [RingMetric, RingMetric, RingMetric] = [
+    { label: "Signals triaged", done: progress.signals.done, total: progress.signals.total, color: "blue" },
+    { label: "Needs matched", done: progress.needs.done, total: progress.needs.total, color: "green" },
+    { label: "Intros recorded", done: progress.intros.sent, total: progress.intros.total, color: "gold" },
+  ];
   return (
     <div className="px-6 py-5">
       <header className="mb-4">
@@ -696,7 +778,7 @@ function HomeView({
         </p>
       </header>
 
-      <div className="mb-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+      <div className="mb-3 grid grid-cols-2 gap-3 md:grid-cols-4">
         <Kpi label="Signals to triage" value={toTriage} sub="across all companies" tone="accent" />
         <Kpi label="Companies on watch" value={companies.length} sub={`${needs.length} open needs`} />
         <Kpi label="Signals · 7 days" value={last7} sub="freshest activity">
@@ -710,11 +792,21 @@ function HomeView({
         <Kpi label="Faculty on file" value={facultyCount || "pending"} sub="required for live matching" />
       </div>
 
+      <Panel title="Pipeline progress" count={`${progress.needs.total} needs · ${progress.signals.total} signals`}>
+        <div className="px-4 py-3">
+          <PipelineRings
+            metrics={ringMetrics}
+            caption="signals → needs matched → introductions recorded · nothing is auto-sent"
+          />
+        </div>
+      </Panel>
+
       <Panel title="Companies on watch" count={`${companies.length}`}>
         <CompanyTable
           companies={companies}
           needsByCompany={needsByCompany}
           signalsByCompany={signalsByCompany}
+          triage={triage}
           onOpen={onOpen}
         />
       </Panel>
@@ -730,27 +822,36 @@ function HomeView({
 
         <Panel title="Needs ready to match" count={`${needs.length}`}>
           <div className="divide-y divide-border/60">
-            {needs.slice(0, 10).map((n) => (
-              <button
-                key={n.id}
-                type="button"
-                onClick={() => onMatch(n.id)}
-                className="group block w-full px-4 py-2.5 text-left transition-colors hover:bg-muted/40 active:scale-[0.98]"
-              >
-                <div className="flex items-center gap-2.5">
-                  <Avatar name={name0x(n.companyId, companies)} className="h-7 w-7 rounded-md text-[10px]" />
-                  <div className="min-w-0 flex-1 leading-tight">
-                    <div className="truncate text-[13px] font-medium">{n.title}</div>
-                    <div className="truncate text-[11px] text-muted-foreground">
-                      {n.topics.slice(0, 3).join(" · ")}
+            {needs.slice(0, 10).map((n) => {
+              const intro = progress.introByNeed.get(n.id);
+              return (
+                <button
+                  key={n.id}
+                  type="button"
+                  onClick={() => onMatch(n.id)}
+                  className="group block w-full px-4 py-2.5 text-left transition-colors hover:bg-muted/40 active:scale-[0.98]"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Avatar name={name0x(n.companyId, companies)} className="h-7 w-7 rounded-md text-[10px]" />
+                    <div className="min-w-0 flex-1 leading-tight">
+                      <div className="truncate text-[13px] font-medium">{n.title}</div>
+                      <div className="truncate text-[11px] text-muted-foreground">
+                        {n.topics.slice(0, 3).join(" · ")}
+                      </div>
                     </div>
+                    {intro && intro.drafts > 0 && (
+                      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+                        {intro.sent > 0 ? `${intro.sent} sent` : "drafted"}
+                        {intro.drafts > intro.sent ? ` · ${intro.drafts - intro.sent} drafted` : ""}
+                      </span>
+                    )}
+                    <span className="shrink-0 text-[11px] font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
+                      Find faculty →
+                    </span>
                   </div>
-                  <span className="shrink-0 text-[11px] font-medium text-primary opacity-0 transition-opacity group-hover:opacity-100">
-                    Find faculty →
-                  </span>
-                </div>
-              </button>
-            ))}
+                </button>
+              );
+            })}
           </div>
         </Panel>
       </div>
@@ -768,11 +869,13 @@ function CompaniesView({
   companies,
   needsByCompany,
   signalsByCompany,
+  triage,
   onOpen,
 }: {
   companies: NobleCompany[];
   needsByCompany: Map<string, NobleInterest[]>;
   signalsByCompany: Map<string, SignalRow[]>;
+  triage: TriageState;
   onOpen: (id: string) => void;
 }) {
   return (
@@ -788,6 +891,7 @@ function CompaniesView({
           companies={companies}
           needsByCompany={needsByCompany}
           signalsByCompany={signalsByCompany}
+          triage={triage}
           onOpen={onOpen}
         />
       </Panel>
@@ -1464,7 +1568,13 @@ function MatchResultsList({
             facultyRow?.[id]?.name ?? id,
             "Athar",
           );
-          next[id] = { draftId: `local-${stamp}-${id}`, subject: copy.subject, body: copy.body, st: "drafted" };
+          next[id] = {
+            draftId: `local-${stamp}-${id}`,
+            subject: copy.subject,
+            body: copy.body,
+            st: "drafted",
+            needId: intro.ctx.interestId,
+          };
         }
         localDraftsRef.current = next;
         setLocalDrafts(next);
@@ -1652,8 +1762,8 @@ function MatchResultsList({
                   </div>
                 </button>
                 <StatusChip label={c.band} tone={bandTone} dotted={false} />
-                <span className="shrink-0 rounded-full bg-muted px-2.5 py-1 text-[11px] font-medium tabular-nums">
-                  {c.score}
+                <span className="shrink-0 text-foreground">
+                  <ScoreRing score={c.score} band={c.band} />
                 </span>
                 {st && <IntroStatusChip status={st} local={localMode} />}
                 {intro && (
