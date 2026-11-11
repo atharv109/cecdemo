@@ -198,7 +198,23 @@ export function FacultyEmailDrawer({
               Preparing your draft…
             </p>
           )}
-          {status !== "sent" && (
+          {status === "sent" ? (
+            /* after a send the draft stays viewable — read-only */
+            <div className="space-y-3">
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Subject
+                </div>
+                <p className="mt-1 text-sm font-medium">{draft?.subject || "—"}</p>
+              </div>
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Message
+                </div>
+                <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{draft?.body || "—"}</p>
+              </div>
+            </div>
+          ) : (
             <>
               <div>
                 <label htmlFor="drawer-subject" className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
