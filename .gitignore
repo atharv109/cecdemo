@@ -24,5 +24,9 @@ __pycache__
 *.sln
 *.sw?
 
-# local runtime data (regenerate with scripts/export_noble.py) - contains raw scraped records
-public/data/
+# local runtime data - the faculty export (export_faculty.py output) contains
+# raw scraped records; the bundled live snapshot is deliberate (public PSU
+# directory data, regenerated with scripts/export_live.py)
+public/data/*
+public/data/noble-snapshot.json.bak
+!public/data/noble-snapshot.json

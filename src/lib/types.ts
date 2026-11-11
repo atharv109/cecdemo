@@ -246,3 +246,47 @@ export async function loadNobleState(workspace = "live"): Promise<NobleState> {
   }
   return (await res.json()) as NobleState;
 }
+
+/* ------------------- static snapshot fallback (deploys) ------------------- */
+
+export interface NobleMatchResult {
+  results?: {
+    facultyId: string;
+    score: number;
+    band: string;
+    components?: { key: string; label: string; score: number | null; explanation: string }[];
+  }[];
+  requestConcepts?: string[];
+  inferredConcepts?: string[];
+}
+
+export interface NobleSnapshot extends NobleState {
+  /** precomputed per-need matches (scripts/export_live.py) */
+  matches?: Record<string, NobleMatchResult>;
+}
+
+export interface LoadedNoble {
+  state: NobleState;
+  matches: Record<string, NobleMatchResult>;
+  /** true = live noble engine; false = baked snapshot, read-only */
+  live: boolean;
+}
+
+const SNAPSHOT_URL = "/data/noble-snapshot.json";
+
+/** Live engine first; when it isn't reachable (e.g. a static deploy), fall
+    back to the bundled snapshot so the dashboard still renders read-only. */
+export async function loadNobleWithFallback(workspace = "live"): Promise<LoadedNoble> {
+  try {
+    return { state: await loadNobleState(workspace), matches: {}, live: true };
+  } catch (liveErr) {
+    const res = await fetch(SNAPSHOT_URL);
+    if (!res.ok) throw liveErr;
+    const snap = (await res.json()) as NobleSnapshot;
+    return {
+      state: { db: snap.db, meta: snap.meta },
+      matches: snap.matches ?? {},
+      live: false,
+    };
+  }
+}

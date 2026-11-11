@@ -3,9 +3,11 @@ import { cn } from "@/lib/utils";
 import { fmtDate, readTriage, writeTriage, type SignalRow } from "@/lib/data";
 import {
   loadNobleState,
+  loadNobleWithFallback,
   type NobleCompany,
   type NobleDraft,
   type NobleInterest,
+  type NobleMatchResult,
   type NobleSignal,
   type NobleState,
   type TriageState,
@@ -111,18 +113,9 @@ function fmtBucket(date: string): "now" | "past" {
 
 /* ---------------------- match studio (noble engine) --------------------- */
 
-interface MatchResult {
-  results?: {
-    facultyId: string;
-    score: number;
-    band: string;
-    components?: { key: string; label: string; score: number | null; explanation: string }[];
-  }[];
-  requestConcepts?: string[];
-  inferredConcepts?: string[];
-}
+type MatchResult = NobleMatchResult;
 
-function useMatch(need: NobleInterest | null) {
+function useMatch(need: NobleInterest | null, baked?: NobleMatchResult) {
   const [result, setResult] = useState<MatchResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -146,7 +139,16 @@ function useMatch(need: NobleInterest | null) {
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setResult(d))
-      .catch((e) => setErr(String(e)))
+      .catch(() => {
+        // live engine unreachable (static deploy) — serve the precomputed match
+        if (baked && (baked.results?.length ?? 0) > 0) {
+          setResult(baked);
+        } else {
+          setErr(
+            "Live matching needs the noble engine (npm run dev in frontend/) — no precomputed match is bundled for this need.",
+          );
+        }
+      })
       .finally(() => setBusy(false));
   }, [need?.id]);
   return { result, busy, err };
@@ -157,12 +159,19 @@ function useMatch(need: NobleInterest | null) {
 export default function App() {
   const [state, setState] = useState<NobleState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** hydrated from the live noble engine, or from the baked snapshot (read-only) */
+  const [live, setLive] = useState(true);
+  const [bakedMatches, setBakedMatches] = useState<Record<string, NobleMatchResult>>({});
   const [route, setRoute] = useState<Route>({ view: "home" });
   const [triage, setTriage] = useState<TriageState>(() => readTriage());
   const [query, setQuery] = useState("");
 
   useEffect(() => {
-    loadNobleState().then(setState, (e) => setError(String(e)));
+    loadNobleWithFallback().then(({ state, matches, live: isLive },) => {
+      setState(state);
+      setLive(isLive);
+      setBakedMatches(matches);
+    }, (e) => setError(String(e)));
   }, []);
 
   const nameById = useMemo(() => {
@@ -383,7 +392,10 @@ export default function App() {
             />
           </div>
           <div className="ml-auto flex items-center gap-3">
-            <StatusChip label="Live · matchengine collection" tone="green" />
+            <StatusChip
+              label={live ? "Live · matchengine collection" : "Snapshot · read-only demo"}
+              tone={live ? "green" : "amber"}
+            />
             <div className="flex items-center gap-2">
               <span className="grid h-8 w-8 place-items-center rounded-full bg-primary text-xs font-semibold text-primary-foreground">
                 A
@@ -405,6 +417,7 @@ export default function App() {
             userId={userId}
             draftsMap={state.db.drafts}
             refresh={refresh}
+            live={live}
           />
         )}
 
@@ -420,6 +433,8 @@ export default function App() {
                 userId={userId}
                 draftsMap={state.db.drafts}
                 refresh={refresh}
+                live={live}
+                baked={bakedMatches[need.id]}
                 onBack={() => setRoute({ view: "company", companyId: need.companyId })}
                 onStudio={() =>
                   setRoute({
@@ -1192,6 +1207,8 @@ function MatchView({
   userId,
   draftsMap,
   refresh,
+  live,
+  baked,
   onBack,
   onStudio,
 }: {
@@ -1202,10 +1219,12 @@ function MatchView({
   userId: string;
   draftsMap: Record<string, NobleDraft> | undefined;
   refresh: () => void;
+  live: boolean;
+  baked?: NobleMatchResult;
   onBack: () => void;
   onStudio: () => void;
 }) {
-  const { result, busy, err } = useMatch(need);
+  const { result, busy, err } = useMatch(need, baked);
   return (
     <div className="mx-auto max-w-3xl px-6 py-5">
       <button
@@ -1267,6 +1286,7 @@ function MatchView({
               userId,
               draftsMap,
               refresh,
+              interactive: live,
             }}
           />
           {result.results?.length === 0 && (
@@ -1289,6 +1309,8 @@ export interface IntroPanelProps {
   userId: string;
   draftsMap: Record<string, NobleDraft> | undefined;
   refresh: () => void;
+  /** false in the read-only snapshot deploy — prepare/send become honest no-ops */
+  interactive?: boolean;
 }
 
 function whyLineFor(result: MatchResult, facultyId: string): {
@@ -1380,6 +1402,10 @@ function MatchResultsList({
 
   async function doPrepare(ids: string[]) {
     if (!intro) return;
+    if (intro.interactive === false) {
+      setIntroErr("Read-only snapshot deploy — drafting and demo-send work in the local app.");
+      return;
+    }
     // don't duplicate drafts for faculty that already have one
     const fresh = ids.filter((id) => statusFor(id) === undefined);
     if (fresh.length === 0) return;
@@ -1426,6 +1452,10 @@ function MatchResultsList({
 
   async function doSend(ids: string[]) {
     if (!intro) return;
+    if (intro.interactive === false) {
+      setIntroErr("Read-only snapshot deploy — drafting and demo-send work in the local app.");
+      return;
+    }
     setBusy(true);
     setIntroErr(null);
     try {
@@ -1607,6 +1637,10 @@ function MatchResultsList({
           status={statusFor(drawerId)}
           autoPrep={autoPrepping.includes(drawerId)}
           onSaveSubjectBody={(id, subject, body) => {
+            if (intro.interactive === false) {
+              setIntroErr("Read-only snapshot deploy — draft editing works in the local app.");
+              return;
+            }
             const local = localDraftsRef.current[id];
             if (local) {
               const next = { ...localDraftsRef.current, [id]: { ...local, subject, body } };
@@ -1651,7 +1685,11 @@ function useMatchText() {
     })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
       .then((d) => setResult(d))
-      .catch((e) => setErr(String(e)))
+      .catch(() => {
+        setErr(
+          "Match Studio needs the live noble engine (npm run dev in frontend/) — custom searches aren't available in the read-only snapshot deploy.",
+        );
+      })
       .finally(() => setBusy(false));
   };
   return { result, busy, err, run };
@@ -1665,6 +1703,7 @@ function StudioView({
   userId,
   draftsMap,
   refresh,
+  live,
 }: {
   initialText: string | null;
   companies: NobleCompany[];
@@ -1673,6 +1712,7 @@ function StudioView({
   userId: string;
   draftsMap: Record<string, NobleDraft> | undefined;
   refresh: () => void;
+  live: boolean;
 }) {
   const [text, setText] = useState(initialText ?? "");
   const { result, busy, err, run } = useMatchText();
@@ -1755,6 +1795,7 @@ function StudioView({
               userId,
               draftsMap,
               refresh,
+              interactive: live,
             }}
           />
         </div>
